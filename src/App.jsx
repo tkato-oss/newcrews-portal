@@ -2629,6 +2629,8 @@ function Portal({ crewName }) {
   const startEdit = () => { setEditDetail(JSON.parse(JSON.stringify(detailsState[selected.id]||CLIENT_DETAILS_DEFAULT()))); setEditMode(true); };
   const saveEdit = () => { setDetailsState(prev=>({...prev,[selected.id]:editDetail})); setEditMode(false); };
   const handleTldvParsed = (r) => {
+    console.log("=== handleTldvParsed 呼び出し ===", r);
+    console.log("selected:", selected?.name, "detail.slackChannel:", detail.slackChannel);
     setDetailsState(prev=>({...prev,[selected.id]:{...prev[selected.id],
       lastMtgDate:r.date||prev[selected.id].lastMtgDate,
       mtgSummary:r.summary||prev[selected.id].mtgSummary,
