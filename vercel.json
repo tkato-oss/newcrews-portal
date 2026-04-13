@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    { "source": "/api/navi/:action", "destination": "/api/navi?action=:action" },
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/admin.html", "destination": "/admin.html" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
