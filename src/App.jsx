@@ -398,6 +398,43 @@ function SalesModal({ onClose, crewName, onSave }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [slackSent, setSlackSent] = useState(false);
+  const [slackSending, setSlackSending] = useState(false);
+
+  const sendToSlack = async () => {
+    if (!result || result.error || slackSending) return;
+    setSlackSending(true);
+    try {
+      const na = (result.nextActions||[]).map(a=>`• ${a}`).join("\n");
+      await fetch(GAS_URL, {
+        method:"POST", headers:{"Content-Type":"text/plain"},
+        body: JSON.stringify({
+          type:"slack",
+          payload:{
+            channel: "C0AE03HRML5",
+            text: `📋 *新規商談 議事録* — ${company}`,
+            blocks: [
+              { type:"header", text:{ type:"plain_text", text:`📋 新規商談 議事録 — ${company}`, emoji:true }},
+              { type:"section", fields:[
+                { type:"mrkdwn", text:`*先方会社*\n${company}` },
+                { type:"mrkdwn", text:`*先方担当*\n${contact||"不明"}` },
+              ]},
+              { type:"section", fields:[
+                { type:"mrkdwn", text:`*商談日*\n${result.date||"不明"}` },
+                { type:"mrkdwn", text:`*PORTAMENT担当*\n${crewName||"不明"}` },
+              ]},
+              { type:"section", text:{ type:"mrkdwn", text:`*📋 サマリー*\n${result.summary||"なし"}` }},
+              { type:"section", text:{ type:"mrkdwn", text:`*✅ ネクストアクション*\n${na||"なし"}` }},
+              ...(result.concerns ? [{ type:"section", text:{ type:"mrkdwn", text:`*🔒 内部メモ*\n${result.concerns}` }}] : []),
+              { type:"context", elements:[{ type:"mrkdwn", text:`via NewCrews Portal | ${new Date().toLocaleString("ja-JP")}` }]},
+            ]
+          }
+        })
+      });
+      setSlackSent(true);
+    } catch(e) { console.error("Slack送信エラー:", e); }
+    setSlackSending(false);
+  };
 
   const saveHistory = () => {
     if (!result || result.error) return;
@@ -418,7 +455,7 @@ function SalesModal({ onClose, crewName, onSave }) {
         }})
       });
       const data = await res.json();
-      const raw = data.content.find(b=>b.type==="text")?.text||"{}";
+      const raw = data.content?.find(b=>b.type==="text")?.text||"{}";
       setResult(JSON.parse(raw.replace(/```json|```/g,"").trim()));
     } catch(e) { setResult({error:"解析に失敗しました"}); }
     setLoading(false);
@@ -506,6 +543,7 @@ function SalesModal({ onClose, crewName, onSave }) {
             {loading?"解析中 ...":"AIで解析する"}
           </button>
           {result&&!result.error&&<button onClick={printPDF} style={{flex:2,background:`linear-gradient(135deg,${C.sage},#6d9073)`,border:"none",borderRadius:12,color:"#fff",padding:"13px 0",cursor:"pointer",fontSize:13,fontWeight:700,boxShadow:"0 4px 16px rgba(125,158,131,0.2)"}}>📄 PDF出力</button>}
+          {result&&!result.error&&<button onClick={sendToSlack} disabled={slackSent||slackSending} style={{flex:2,background:slackSent?"#e0e0e0":slackSending?"#b0b0b0":`linear-gradient(135deg,#4A154B,#6b3a6c)`,border:"none",borderRadius:12,color:slackSent?C.textSoft:"#fff",padding:"13px 0",cursor:slackSent?"default":"pointer",fontSize:13,fontWeight:600}}>{slackSent?"✓ Slack送信済":slackSending?"送信中...":"💬 Slack送信"}</button>}
           {result&&!result.error&&<button onClick={saveHistory} disabled={saved} style={{flex:1,background:saved?"#e0e0e0":`linear-gradient(135deg,#c9728a,#e8a8b8)`,border:"none",borderRadius:12,color:saved?C.textSoft:"#fff",padding:"13px 0",cursor:saved?"default":"pointer",fontSize:13,fontWeight:600}}>{saved?"✓ 保存済":"💾 履歴保存"}</button>}
         </div>
       </div>
@@ -1018,23 +1056,54 @@ function Ornament({ color = C.rose, width = 120, style: s }) {
 // tldv 解析モーダル
 // ============================================================
 // Word形式でダウンロードするヘルパー
+function buildWordHtml(result, clientName) {
+  const date = result.date || new Date().toISOString().slice(0,10);
+  const env = result.clientEnvironment || {};
+  const tasks = result.automationTasks || [];
+  const outOfScope = result.outOfScope || [];
+  return `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word'>
+<head><meta charset='UTF-8'></head><body style='font-family:MS Mincho,serif;font-size:11pt;line-height:1.8;'>
+<h2 style='text-align:center;border-bottom:2px solid #333;padding-bottom:8px;'>${clientName} - MTG議事録</h2>
+<table style='width:100%;border-collapse:collapse;margin-bottom:16px;'>
+  <tr><td style='width:120px;font-weight:bold;padding:4px 8px;border:1px solid #999;'>日付</td><td style='padding:4px 8px;border:1px solid #999;'>${date}</td></tr>
+  <tr><td style='font-weight:bold;padding:4px 8px;border:1px solid #999;'>先方出席者</td><td style='padding:4px 8px;border:1px solid #999;'>${result.participants||'不明'}</td></tr>
+  <tr><td style='font-weight:bold;padding:4px 8px;border:1px solid #999;'>形式</td><td style='padding:4px 8px;border:1px solid #999;'>${result.meetingType||'不明'}</td></tr>
+</table>
+<h3 style='border-left:4px solid #c9728a;padding-left:8px;'>サマリー</h3>
+<p style='margin-left:16px;'>${result.summary||''}</p>
+${env.systems?.length||env.dataFormats?.length||env.constraints?.length?`
+<h3 style='border-left:4px solid #5b7fc4;padding-left:8px;'>顧客環境</h3>
+<table style='width:100%;border-collapse:collapse;margin:8px 0 16px 16px;'>
+  ${env.systems?.length?`<tr><td style='width:140px;font-weight:bold;padding:4px 8px;border:1px solid #999;'>使用システム</td><td style='padding:4px 8px;border:1px solid #999;'>${env.systems.join('、')}</td></tr>`:''}
+  ${env.dataFormats?.length?`<tr><td style='font-weight:bold;padding:4px 8px;border:1px solid #999;'>データ形式</td><td style='padding:4px 8px;border:1px solid #999;'>${env.dataFormats.join('、')}</td></tr>`:''}
+  ${env.constraints?.length?`<tr><td style='font-weight:bold;padding:4px 8px;border:1px solid #999;'>制約・注意</td><td style='padding:4px 8px;border:1px solid #999;'>${env.constraints.join('、')}</td></tr>`:''}
+</table>`:''}
+${tasks.length?`
+<h3 style='border-left:4px solid #7d9e83;padding-left:8px;'>自動化タスク一覧</h3>
+${tasks.map((t,i)=>`
+<div style='margin:8px 0 16px 16px;padding:12px;border:1px solid #ddd;border-radius:4px;'>
+  <div style='font-weight:bold;font-size:12pt;margin-bottom:8px;'>【タスク${i+1}】${t.name||''}　<span style='font-size:10pt;color:#666;'>${t.status||''}</span></div>
+  <table style='width:100%;border-collapse:collapse;'>
+    <tr><td style='width:120px;font-weight:bold;padding:3px 8px;border:1px solid #ccc;'>インプット</td><td style='padding:3px 8px;border:1px solid #ccc;'>${t.input||'要確認'}</td></tr>
+    <tr><td style='font-weight:bold;padding:3px 8px;border:1px solid #ccc;'>アウトプット</td><td style='padding:3px 8px;border:1px solid #ccc;'>${t.output||'要確認'}</td></tr>
+    <tr><td style='font-weight:bold;padding:3px 8px;border:1px solid #ccc;'>使用ツール</td><td style='padding:3px 8px;border:1px solid #ccc;'>${t.tools||'要検討'}</td></tr>
+    <tr><td style='font-weight:bold;padding:3px 8px;border:1px solid #ccc;'>As-Is</td><td style='padding:3px 8px;border:1px solid #ccc;'>${t.asIs||''}</td></tr>
+    <tr><td style='font-weight:bold;padding:3px 8px;border:1px solid #ccc;'>To-Be</td><td style='padding:3px 8px;border:1px solid #ccc;'>${t.toBe||''}</td></tr>
+    ${t.notes?`<tr><td style='font-weight:bold;padding:3px 8px;border:1px solid #ccc;color:#c44;'>注意事項</td><td style='padding:3px 8px;border:1px solid #ccc;color:#c44;'>${t.notes}</td></tr>`:''}
+  </table>
+</div>`).join('')}`:''}
+${outOfScope.length?`
+<h3 style='border-left:4px solid #e07c7c;padding-left:8px;'>自動化できないこと</h3>
+<ul>${outOfScope.map(s=>`<li>${s}</li>`).join('')}</ul>`:''}
+<h3 style='border-left:4px solid #7d9e83;padding-left:8px;'>ネクストアクション</h3>
+<ul>${(result.nextActions||[]).map(a=>`<li>${a}</li>`).join('')}</ul>
+${result.concerns?`<h3 style='border-left:4px solid #e8a87c;padding-left:8px;'>懸念事項（社内メモ）</h3><p style='margin-left:16px;'>${result.concerns}</p>`:''}
+</body></html>`;
+}
+
 function downloadAsWord(result, clientName) {
   const date = result.date || new Date().toISOString().slice(0,10);
-  const html = `
-<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word'>
-<head><meta charset='UTF-8'></head><body style='font-family:MS Mincho,serif;font-size:11pt;line-height:1.8;'>
-<h2 style='text-align:center;border-bottom:2px solid #333;padding-bottom:8px;'>議事録</h2>
-<table style='width:100%;border-collapse:collapse;margin-bottom:16px;'>
-  <tr><td style='width:120px;font-weight:bold;padding:4px 8px;border:1px solid #999;'>クライアント</td><td style='padding:4px 8px;border:1px solid #999;'>${clientName}</td></tr>
-  <tr><td style='font-weight:bold;padding:4px 8px;border:1px solid #999;'>日付</td><td style='padding:4px 8px;border:1px solid #999;'>${date}</td></tr>
-</table>
-<h3 style='border-left:4px solid #c9728a;padding-left:8px;'>📋 サマリー</h3>
-<p style='margin-left:16px;'>${result.summary||''}</p>
-<h3 style='border-left:4px solid #7d9e83;padding-left:8px;'>✅ ネクストアクション</h3>
-<ul>${(result.nextActions||[]).map(a=>`<li>${a}</li>`).join('')}</ul>
-${result.concerns?`<h3 style='border-left:4px solid #e8a87c;padding-left:8px;'>⚠️ 懸念事項</h3><p style='margin-left:16px;'>${result.concerns}</p>`:''}
-${result.automationHints?.length?`<h3 style='border-left:4px solid #9b8ec4;padding-left:8px;'>🤖 自動化ヒント</h3><ul>${result.automationHints.map(a=>`<li>${a}</li>`).join('')}</ul>`:''}
-</body></html>`;
+  const html = buildWordHtml(result, clientName);
   const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1052,29 +1121,59 @@ function TldvModal({ onClose, onParsed, clientName }) {
     setLoading(true);
     try {
       const res = await fetch(GAS_URL, {
-        method:"POST", headers:{"Content-Type":"text/plain"},
+        method:"POST",
         body: JSON.stringify({type:"claude",payload:{
-          model:"claude-opus-4-5", max_tokens:1500,
+          model:"claude-sonnet-4-5", max_tokens:4000,
           system:`BPO・業務自動化コンサル会社PORTAMENTの担当者として、会議録を詳細に解析してJSONのみ返してください（コードブロック不要）。
+この議事録は社内共有用（担当Crewが読んで案件の全体像を把握し着手できる資料）です。
+
 以下のフォーマットで出力：
 {
   "date": "YYYY-MM-DD（会議日付。不明ならtodayの日付）",
-  "summary": "会議の要点を2〜3文で簡潔に",
+  "participants": "先方出席者（名前・役職。不明なら空文字）",
+  "meetingType": "オンライン or 対面（不明なら空文字）",
+  "summary": "会議の要点を3〜5文で。何が話され何が決まったか具体的に",
+  "clientEnvironment": {
+    "systems": ["使用システム名（会計ソフト、CRM、グループウェア等）"],
+    "dataFormats": ["データ形式（Excel、CSV、紙、メール等）"],
+    "constraints": ["制約・注意事項（セキュリティ要件、VPN、オフライン環境等）"]
+  },
+  "automationTasks": [
+    {
+      "name": "タスク名",
+      "status": "提案中 or 着手可 or 要調査",
+      "input": "インプット（何から。例: らくらく明細のCSV）",
+      "output": "アウトプット（何を出す。例: 店舗別売上Excelシート）",
+      "tools": "使用ツール（GAS / Python / RPA等）",
+      "asIs": "現状どうやっているか",
+      "toBe": "自動化後どうなるか",
+      "notes": "注意事項・イレギュラー・実務上の制約"
+    }
+  ],
+  "outOfScope": ["自動化できないこと。ロジック上可能でも実務上困難なもの。理由も含める"],
   "nextActions": ["担当者名（不明なら先方/弊社）: アクション内容（期日付き）"],
-  "concerns": "内部共有用の懸念点・リスク（先方には見せない）",
-  "automationHints": ["自動化・効率化できそうな業務を具体的に"],
+  "concerns": "内部共有用の懸念点・リスク（先方には見せない。属人化・技術的懸念等）",
   "clientNeeds": "クライアントの本質的なニーズ・課題（1〜2文）",
   "workflowPlan": "提案できる自動化フローの概要（あれば）",
-  "automatableTasks": ["自動化対象の業務リスト"]
+  "automatableTasks": ["自動化対象の業務リスト（後方互換用）"]
 }
-数値・固有名詞・期日は原文から正確に抽出。不明な項目は空文字や空配列。`,
+数値・固有名詞・期日・システム名は原文から正確に抽出。不明な項目は空文字や空配列。
+特にautomationTasksのinput/output/toolsはCrewが着手するために必須。会議録から読み取れる限り具体的に記載すること。`,
           messages:[{role:"user",content:`以下の会議録を解析:\n\n${text}`}]
         }})
       });
       const data = await res.json();
-      const raw = data.content.find(b=>b.type==="text")?.text||"{}";
+      console.log("tldv API response:", JSON.stringify(data).substring(0, 500));
+      const raw = data.content?.find(b=>b.type==="text")?.text || data.result || "{}";
+      console.log("tldv raw text:", raw.substring(0, 300));
       setResult(JSON.parse(raw.replace(/```json|```/g,"").trim()));
-    } catch(e) { setResult({error:"解析に失敗しました"}); }
+    } catch(e) {
+      console.error("tldv parse error:", e);
+      const isCors = e.message && (e.message.includes("Failed to fetch") || e.message.includes("NetworkError"));
+      setResult({error: isCors
+        ? "GAS接続エラー（CORS）: GASの再デプロイが必要です。GASエディタ → デプロイ → 新しいデプロイ → ウェブアプリ → アクセス:全員 で再デプロイしてください"
+        : "解析に失敗しました: " + e.message});
+    }
     setLoading(false);
   };
 
@@ -1090,7 +1189,7 @@ function TldvModal({ onClose, onParsed, clientName }) {
         {result && !result.error && (
           <div style={{background:C.sageLight,border:`1px solid ${C.sage}30`,borderRadius:12,padding:18,margin:"16px 0"}}>
             <div style={{color:C.sage,fontSize:11,fontWeight:700,marginBottom:10,letterSpacing:"0.08em"}}>&#x2713; 解析完了</div>
-            {[["日付",result.date],["サマリー",result.summary],["ネクスト",result.nextActions?.join(" / ")],result.automationHints?.length?["自動化ヒント",result.automationHints?.join("、")]:null].filter(Boolean).map(([k,v])=>(
+            {[["日付",result.date],["サマリー",result.summary],["ネクスト",result.nextActions?.join(" / ")],result.automationTasks?.length?["自動化タスク",result.automationTasks.map(t=>`${t.name}(${t.status||'要確認'})`).join("、")]:null,result.outOfScope?.length?["対象外",result.outOfScope.join("、")]:null,result.clientEnvironment?.systems?.length?["顧客環境",result.clientEnvironment.systems.join("、")]:null].filter(Boolean).map(([k,v])=>(
               <div key={k} style={{fontSize:12,color:C.textMid,marginBottom:4}}><span style={{color:C.textSoft,fontWeight:500}}>{k}：</span>{v}</div>
             ))}
           </div>
@@ -1128,7 +1227,7 @@ function ReportModal({ client, detail, onClose }) {
           }})
         });
         const data = await res.json();
-        setReport(data.content.find(b=>b.type==="text")?.text||"生成に失敗しました");
+        setReport(data.content?.find(b=>b.type==="text")?.text||"生成に失敗しました");
         setStep("preview");
       } catch { setReport("エラーが発生しました。"); setStep("preview"); }
       setLoading(false);
@@ -1282,117 +1381,347 @@ ${bodyHtml}
 
 function ProposalModal({ client, detail, onClose }) {
   const [loading, setLoading] = useState(true);
-  const [proposal, setProposal] = useState("");
+  const [statusMsg, setStatusMsg] = useState("Stage 1: tldv要約を構造化中...");
+  const [proposalJson, setProposalJson] = useState(null);
+  const [pptxResult, setPptxResult] = useState(null);
+  const [pptxGenerating, setPptxGenerating] = useState(false);
+  const [slackSent, setSlackSent] = useState(false);
+  const [slackSending, setSlackSending] = useState(false);
+
+  const PROPOSAL_API = "http://127.0.0.1:8769";
+
+  const sendProposalToSlack = async () => {
+    if (!proposalJson || slackSending) return;
+    setSlackSending(true);
+    try {
+      const summary = [
+        `*${client.name}* — 自動化提案書（PPTX）`,
+        `課題: ${proposalJson["§1_根本課題"]||"—"}`,
+        `案件: ${(proposalJson["§3_解決策"]||[]).map(s=>s["案件名"]).join("、")||"—"}`,
+        `ROI: 削減¥${(proposalJson["§4_ROI"]?.["削減コスト_月"]||0).toLocaleString()}/月 → メリット¥${(proposalJson["§4_ROI"]?.["差引メリット_月"]||0).toLocaleString()}/月`,
+        `見積: 初期¥${(proposalJson["見積り"]?.["初期構築費用"]||0).toLocaleString()} / 月額¥${(proposalJson["見積り"]?.["月額"]||0).toLocaleString()}`,
+        pptxResult?.path ? `ファイル: ${pptxResult.path}` : ""
+      ].filter(Boolean).join("\n");
+      await fetch(GAS_URL, {
+        method:"POST", headers:{"Content-Type":"text/plain"},
+        body: JSON.stringify({
+          type:"slack",
+          payload:{
+            channel: "C0AE03HRML5",
+            text: `📝 ${client.name} — 提案書PPTX生成完了`,
+            blocks: [
+              { type:"header", text:{ type:"plain_text", text:`📝 ${client.name} — 提案書PPTX生成`, emoji:true }},
+              { type:"section", text:{ type:"mrkdwn", text: summary }},
+              { type:"context", elements:[{ type:"mrkdwn", text:`via NewCrews Portal | AI生成 → PPTX自動出力` }]},
+            ]
+          }
+        })
+      });
+      setSlackSent(true);
+    } catch(e) { console.error("Slack送信エラー:", e); }
+    setSlackSending(false);
+  };
+
+  const generatePptx = async () => {
+    if (!proposalJson || pptxGenerating) return;
+    setPptxGenerating(true);
+    try {
+      const res = await fetch(PROPOSAL_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(proposalJson)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPptxResult(data);
+      } else {
+        setPptxResult({ error: data.error || "PPTX生成に失敗しました" });
+      }
+    } catch(e) {
+      setPptxResult({ error: "ローカルAPIサーバーに接続できません。proposal_api.py を起動してください。" });
+    }
+    setPptxGenerating(false);
+  };
 
   useEffect(()=>{
     (async()=>{
       try {
-        const res = await fetch(GAS_URL, {
+        // Stage 1: tldv要約 → 構造化データ抽出 (Sonnet)
+        setStatusMsg("Stage 1: tldv要約を構造化中...");
+        const stage1Res = await fetch(GAS_URL, {
           method:"POST", headers:{"Content-Type":"text/plain"},
           body: JSON.stringify({type:"claude", payload:{
-            model:"claude-opus-4-5", max_tokens:2000,
-            system:`あなたはPORTAMENT（BPO・業務自動化コンサル会社）の上級コンサルタントです。
-クライアントの課題を深く理解し、説得力のある提案書を以下の5段構成で作成してください。
+            model:"claude-sonnet-4-5", max_tokens:3000,
+            system:`あなたはPORTAMENT（BPO・業務自動化コンサル会社）の商談分析AIです。
+クライアントのヒアリング情報から、提案書作成に必要な情報を正確に抽出してください。
 
-【厳守ルール】
-- 冒頭にタイトル・作成日・作成者などのヘッダー情報は一切書かない（表紙は別途出力される）
-- 時給は必ず2,000円で統一すること（他の金額は使用しない）
-- フロー図・ステップはコードブロックや縦棒（|）を使わず、番号付きリストと箇条書きのみで表現
-- 「、、、」「↓」などの記号・区切り文字は使用しない
+【抽出ルール】
+- 相手が実際に言った内容を原文に近い形で抽出すること
+- 数字（時間・人数・金額・頻度）は全て拾うこと
+- 推測は禁止。情報がない場合は "不明" とすること
+- 業務フローは手順レベルで具体的に抽出（「Excelに入力」→「請求書を見ながら取引先名・金額・日付をExcel支払管理表に手入力」）
 
-【必須フォーマット】
-
-## 1. 現状課題の定義
-- 具体的な業務課題を箇条書きで3〜5項目
-- できる限り定量的に表現（例：週〇時間、月〇件）
-
-## 2. 現状コストの試算 ※時給2,000円換算
-- 見出しは必ず「## 2. 現状コストの試算 ※時給2,000円換算」とすること（注釈は見出しに含める）
-- 課題による時間・人件費コストを表形式で提示（時給2,000円で統一）
-- 月次・年次での換算を含める
-- 表の後に「> ※時給2,000円換算」は書かない（見出しに含まれているため）
-
-## 3. 解決策の提案
-- 案件ごとに以下の構造で記載すること：
-
-### 案件名
-**自動化フロー**
-Step 1: 〇〇
-Step 2: 〇〇
-Step 3: 〇〇
-（縦に1行ずつ。横並びにしない）
-
-**各ステップの詳細**
-① 〇〇（Step 1に対応）
-【As-Is】現状の課題を具体的・定量的に記載
-【To-Be】PORTAMENTによる解決策を記載
-
-② 〇〇（Step 2に対応）
-【As-Is】...
-【To-Be】...
-
-- 自動化フローのStep行は必ず縦並び（1行に1Step）で記載
-- 各ステップの詳細では【As-Is】と【To-Be】を必ず対で記載すること
-- コードブロックや縦棒（|）は使わない
-
-## 4. 導入効果（ROI）
-- 初期費用・月額費用・運用費用などのコスト項目は一切記載しない
-- 以下の3項目のみを案件ごとに表形式で提示：
-  - 削減工数（月〇時間、〇%削減）
-  - 月間削減コスト（時給2,000円換算）
-  - 年間削減コスト（時給2,000円換算）
-
-## 5. 導入ステップ（3ヶ月ロードマップ）
-- Phase1（1ヶ月目）：ヒアリング・設計
-- Phase2（2ヶ月目）：開発・テスト
-- Phase3（3ヶ月目）：本番稼働・安定化
-
-数値は会議情報から推測して具体的に記載。不明な場合は合理的な仮定値を使用し（※仮定値）と注記。`,
-            messages:[{role:"user",content:`【クライアント情報】
-会社名: ${client.name}
-業種・規模: ${client.industry||"不明"}
+出力は必ず以下のJSON形式のみ。説明文や前置きは一切不要。
+{
+  "相手が言った課題": ["課題1", "課題2"],
+  "言及された数字": [
+    {"内容": "月20時間", "文脈": "請求書処理にかかる時間"}
+  ],
+  "現在の業務フロー": [
+    {"業務": "請求書処理", "手順": ["メールで請求書を受領", "手動でファイルをリネーム", "フォルダに格納", "Excel管理表に手入力"], "頻度": "月30〜40件", "工数": "月11時間", "担当": "経理担当1名"}
+  ],
+  "使用中のツール": ["Google Workspace", "マネーフォワード"],
+  "関心サービス": ["請求書自動化"],
+  "懸念": ["コスト", "既存フローの変更"],
+  "温度感": "高/中/低",
+  "属人化リスク": ["経理業務が1名に集中している"],
+  "提案書に含めるべき案件": [
+    {"案件名": "請求書自動整理・データ転記", "対象業務": "請求書の受領→リネーム→格納→Excel転記", "現状の課題": "手入力で月11時間、月末に集中", "想定効果": "月11時間削減"}
+  ]
+}
+不明な項目は空配列[]にする。推測で埋めない。`,
+            messages:[{role:"user",content:`【${client.name}】
+業種: ${client.industry||"不明"}
 担当クルー: ${client.crew?.join("、")||"未定"}
-
-【ヒアリング済み情報】
-自動化可能業務: ${detail.automatableTasks?.join("、")||"ヒアリング必要"}
-業務フロー案: ${detail.workflowPlan||"未設計"}
+自動化可能業務: ${detail.automatableTasks?.join("、")||"不明"}
+業務フロー案: ${detail.workflowPlan||"不明"}
 直近MTGサマリー: ${detail.mtgSummary||"なし"}
 懸念事項: ${detail.concerns||"特になし"}
 自動化ヒント: ${detail.automationHints?.join("、")||"なし"}
-KPI状況: ${detail.kpiStatus||"未設定"}
-
-上記情報をもとに、5段構成の提案書を作成してください。数値は積極的に推測・算出してください。`}]
+KPI状況: ${detail.kpiStatus||"未設定"}`}]
           }})
         });
-        const data = await res.json();
-        setProposal(data.content.find(b=>b.type==="text")?.text||"生成に失敗しました");
-      } catch { setProposal("エラーが発生しました。"); }
+        const stage1Data = await stage1Res.json();
+        if (stage1Data.error) { setStatusMsg("Stage 1 エラー: " + (stage1Data.error.message||stage1Data.error)); setLoading(false); return; }
+        const extractedText = stage1Data.content?.find(b=>b.type==="text")?.text||"{}";
+        let extracted;
+        try {
+          const jsonMatch = extractedText.match(/\{[\s\S]*\}/);
+          extracted = JSON.parse(jsonMatch ? jsonMatch[0] : extractedText);
+        } catch { extracted = {}; }
+
+        // Stage 2: 構造化データ → 提案書JSON (Sonnet — 速度・安定性優先)
+        setStatusMsg("Stage 2: 提案書JSONを生成中...");
+        const stage2Res = await fetch(GAS_URL, {
+          method:"POST", headers:{"Content-Type":"text/plain"},
+          body: JSON.stringify({type:"claude", payload:{
+            model:"claude-sonnet-4-5", max_tokens:4000,
+            system:`あなたはPORTAMENT（BPO・業務自動化コンサル会社）の上級コンサルタントです。
+商談で抽出された情報をもとに、提案書PPTXに流し込むための構造化JSONを生成してください。
+
+【この提案書の目的】
+- 読み手は決裁者（役員・社長・部長）。技術用語は使わない。
+- 加藤不在でも社内稟議を通せる資料にすること。
+- 「やる/やらない」の投資判断ができる情報を全て含める。
+
+【加藤の営業思想（必ず反映）】
+1. 相手にとって不要なものは売らない
+2. できないことは正直に言う → §3の対象外に反映
+3. 入り口は低く → §5 Phase1は最小スタート
+4. 属人化防止の観点は特に刺さる → §1に反映
+
+【鉄則】テキストは全て一言キャッチコピー。文章禁止。決裁者は長文を読まない。
+【鉄則】文字数制限（PPTXレイアウト制約）:
+  - §1_課題: 各15文字以内
+  - §3 フローのステップ名: 6文字以内（例: 「自動取得」「手動確認」）
+  - §3 フローの詳細: 12文字以内（例: 「メール添付を自動取得」）
+  - その他テキスト: 20文字以内目安
+【鉄則】技術用語禁止。決裁者の言葉で書く（「API連携」→「自動で転記」等）。
+【鉄則】コスト計算: 時給2,000円（現状試算）、代行料3,500円/h（PORTAMENT費用）で統一。
+
+出力は必ず以下のJSON形式のみ。説明文や前置きは一切不要。
+{
+  "クライアント名": "株式会社〇〇",
+  "表紙タイトル": "株式会社〇〇御中\\n業務自動化構築のご提案",
+
+  "§1_リード文": "〇〇様の△△業務において、以下の課題を確認いたしました。",
+  "§1_課題": [
+    {"見出し": "課題の見出し（20文字以内）", "説明": "ヒアリングで確認した具体的な状況（2行程度）"}
+  ],
+  "§1_根本課題": "一文で根本課題。属人化リスクがあれば必ず含める",
+
+  "§2_コスト": {
+    "items": [
+      {"業務": "業務名", "月間時間": 6, "月間コスト": 12000, "年間コスト": 144000}
+    ],
+    "合計_月間時間": 23,
+    "合計_月": 46000,
+    "合計_年": 552000
+  },
+
+  "§3_解決策": [
+    {
+      "案件名": "案件A: 案件名",
+      "as_is_flow": [
+        {"ステップ": "ステップ名", "詳細": "具体的な手作業内容", "工数": "月Xh"}
+      ],
+      "to_be_flow": [
+        {"ステップ": "ステップ名", "詳細": "自動化後の動作", "方式": "自動 or 手動"}
+      ],
+      "対象外": [
+        {"項目": "対象外の業務", "理由": "対象外とする理由と今後の見通し"}
+      ],
+      "削減効果": {"現状工数": "月Xh", "自動化後": "月Xh"}
+    }
+  ],
+
+  "§4_ROI": {
+    "削減工数_月": 20,
+    "削減コスト_月": 40000,
+    "削減コスト_年": 480000,
+    "代行費用_月": 35000,
+    "差引メリット_月": 5000,
+    "差引メリット_年": 60000,
+    "投資回収期間": "初月から黒字（コスト削減効果が代行費用を上回る）",
+    "定性効果": [
+      "月末の業務集中が解消され、残業削減・精神的負担の軽減",
+      "手入力ミス・確認漏れによるトラブル防止"
+    ]
+  },
+
+  "§5_導入ステップ": [
+    {
+      "phase": 1,
+      "名前": "スモールスタート",
+      "期間": "初月",
+      "対象": "案件A（最も効果が見えやすい案件）",
+      "月額目安": 17500,
+      "月額根拠": "3,500円/h × 5時間",
+      "目的": "最小構成で効果を体感"
+    }
+  ],
+  "§5_Phase1効果文": "Phase 1の効果を見てから次に進むかご判断いただけます。まずは1ヶ月、請求書処理の自動化だけでも効果を体感いただければ幸いです。",
+
+  "§6_スケジュール": {
+    "期間ラベル": ["1ヶ月目", "2ヶ月目", "3ヶ月目", "4ヶ月目〜"],
+    "行": [
+      {"案件名": "案件A: 請求書自動化", "開始": 0, "終了": 1, "工程": [
+        {"名前": "要件確認・設計", "開始": 0, "終了": 0.3},
+        {"名前": "構築・テスト", "開始": 0.3, "終了": 0.7},
+        {"名前": "本番運用開始", "開始": 0.7, "終了": 1}
+      ]},
+      {"案件名": "案件B/C: 入出金自動化", "開始": 1, "終了": 3},
+      {"案件名": "案件D: 楽々精算突合", "開始": 3, "終了": 4}
+    ]
+  },
+
+  "見積り": {
+    "初期構築費用": 50000,
+    "初期構築_含むもの": ["要件確認・設計", "実装・テスト", "本番導入サポート"],
+    "月額": 30000,
+    "月額_含むもの": ["障害対応・メンテナンス", "運用モニタリング"],
+    "注記": ["上記はPhase 1の金額です", "Phase 1の効果を見てから判断いただけます"]
+  }
+}
+
+【生成ルール】
+- §1_課題: 「御社の現状をこう理解しています」を伝えるスライド。見出し+説明の形式。ヒアリングで聞いた相手の言葉を使い、具体的な状況（数字・頻度・担当者）を盛り込む。属人化リスクは経営リスクとして強調。このスライドだけは説明文OK（信頼構築のため）。
+- §2_コスト: 時給2,000円で統一。月間+年間の両方を必ず算出。稟議は年単位。
+- §3_解決策: 案件数に応じて1〜4個。各案件に正確な業務フローステップを記載。
+  - as_is_flow: 現在の手作業フローを正確にステップ分解（省略しない）。
+  - to_be_flow: 自動化後のフロー。人間が残る作業も「方式: 手動」で正直に記載。
+  - 対象外: できないこと・初期段階でやらないことを正直に書く。理由と今後の見通しも添える。
+- §4_ROI: 削減コスト - 代行費用 = 差引メリット。投資回収3ヶ月以内が理想、超える場合は正直に。
+- §5_導入ステップ: Phase分け。Phase1は最小構成。「Phase1の効果を見てから判断」を必ず添える。
+- §6_スケジュール: 全案件の構築スケジュールをガントチャート形式で。期間ラベルは月単位。各行に案件名と開始〜終了の期間インデックス（0始まり、期間ラベルの数に対応）。Phase1案件は工程詳細（要件確認・構築・本番）も記載。
+- 見積り: 加藤が手動調整する前提。合理的な概算で良い。
+- 不明な情報は合理的に推測し（※仮定値）と注記。`,
+            messages:[{role:"user",content:`【クライアント名】${client.name}
+【業種】${client.industry||"不明"}
+
+【Stage1抽出データ】
+${JSON.stringify(extracted, null, 2)}
+
+上記データから提案書JSONを生成してください。`}]
+          }})
+        });
+        const stage2Data = await stage2Res.json();
+        if (stage2Data.error) { setStatusMsg("Stage 2 エラー: " + (stage2Data.error.message||stage2Data.error)); setLoading(false); return; }
+        const proposalText = stage2Data.content?.find(b=>b.type==="text")?.text||"{}";
+        let proposal;
+        try {
+          const jsonMatch2 = proposalText.match(/\{[\s\S]*\}/);
+          proposal = JSON.parse(jsonMatch2 ? jsonMatch2[0] : proposalText);
+        } catch { proposal = null; }
+
+        if (proposal && (proposal["§1_課題"] || proposal["§3_解決策"])) {
+          setProposalJson(proposal);
+          setStatusMsg("JSON生成完了");
+        } else {
+          setProposalJson(null);
+          const preview = proposalText.substring(0, 200);
+          setStatusMsg(`提案書JSONの生成に失敗しました（応答: ${preview}...）`);
+        }
+      } catch(e) {
+        console.error("提案書生成エラー:", e);
+        setStatusMsg("エラーが発生しました: " + e.message);
+      }
       setLoading(false);
     })();
   },[]);
+
+  const jsonPreview = proposalJson ? [
+    `【§1 課題】${proposalJson["§1_リード文"]||""}`,
+    ...((proposalJson["§1_課題"]||[]).map(c=>typeof c==="string"?`  ・${c}`:`  ■ ${c["見出し"]||""}\n    ${c["説明"]||""}`)),
+    `  根本課題: ${proposalJson["§1_根本課題"]||"—"}`,
+    "",
+    `【§2 現状コスト】月間 ¥${(proposalJson["§2_コスト"]?.["合計_月"]||0).toLocaleString()} / 年間 ¥${(proposalJson["§2_コスト"]?.["合計_年"]||0).toLocaleString()}`,
+    ...((proposalJson["§2_コスト"]?.items||[]).map(it=>`  ${it["業務"]}: 月${it["月間時間"]}h → ¥${(it["月間コスト"]||0).toLocaleString()}/月`)),
+    "",
+    ...((proposalJson["§3_解決策"]||[]).flatMap(s=>[
+      `【§3 ${s["案件名"]}】`,
+      `  As-Is: ${s["as_is_flow"]?.map(f=>f["ステップ"]).join(" → ")||"—"}`,
+      `  To-Be: ${s["to_be_flow"]?.map(f=>f["ステップ"]).join(" → ")||"—"}`,
+      ...(s["対象外"]||[]).map(ex=>`  ⚠対象外: ${ex["項目"]} — ${ex["理由"]}`),
+      `  削減: ${s["削減効果"]?.["現状工数"]||"?"} → ${s["削減効果"]?.["自動化後"]||"?"}`,
+      ""
+    ])),
+    `【§4 ROI】削減 ¥${(proposalJson["§4_ROI"]?.["削減コスト_月"]||0).toLocaleString()}/月 − 代行 ¥${(proposalJson["§4_ROI"]?.["代行費用_月"]||0).toLocaleString()}/月 = メリット ¥${(proposalJson["§4_ROI"]?.["差引メリット_月"]||0).toLocaleString()}/月`,
+    `  ${proposalJson["§4_ROI"]?.["投資回収期間"]||"—"}`,
+    "",
+    `【§5 導入ステップ】${(proposalJson["§5_導入ステップ"]||[]).map(p=>`Phase${p.phase}: ${p["名前"]}`).join(" → ")}`,
+    `【§6 スケジュール】${(proposalJson["§6_スケジュール"]?.["行"]||[]).map(r=>r["案件名"]).join(" → ")}`,
+    `【見積り】初期 ¥${(proposalJson["見積り"]?.["初期構築費用"]||0).toLocaleString()} / 月額 ¥${(proposalJson["見積り"]?.["月額"]||0).toLocaleString()}`
+  ].join("\n") : "";
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(61,51,48,0.35)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:24,backdropFilter:"blur(12px)",animation:"fadeIn 0.3s ease"}}>
       <div style={{background:"rgba(255,255,255,0.92)",backdropFilter:"blur(20px)",border:`1px solid ${C.borderSoft}`,borderRadius:24,width:"100%",maxWidth:700,maxHeight:"85vh",display:"flex",flexDirection:"column",boxShadow:"0 32px 80px rgba(61,51,48,0.12)",animation:"scaleIn 0.35s ease"}}>
         <div style={{padding:"28px 32px 20px",borderBottom:`1px solid ${C.borderSoft}`,flexShrink:0,position:"relative"}}>
           <button onClick={onClose} style={{position:"absolute",top:20,right:24,background:"none",border:"none",color:C.textSoft,cursor:"pointer",fontSize:18}} onMouseEnter={e=>e.target.style.color=C.rose} onMouseLeave={e=>e.target.style.color=C.textSoft}>&#x2715;</button>
-          <div style={{fontSize:9,fontWeight:600,color:C.sky,letterSpacing:"0.18em",textTransform:"uppercase",marginBottom:4,fontFamily:"'Jost',sans-serif"}}>Automation Roadmap</div>
-          <h3 style={{margin:0,fontSize:20,fontFamily:"'Cormorant Garamond',serif",fontWeight:500,color:C.text}}>{client.name} — 自動化提案書</h3>
+          <div style={{fontSize:9,fontWeight:600,color:C.sky,letterSpacing:"0.18em",textTransform:"uppercase",marginBottom:4,fontFamily:"'Jost',sans-serif"}}>Proposal Generator</div>
+          <h3 style={{margin:0,fontSize:20,fontFamily:"'Cormorant Garamond',serif",fontWeight:500,color:C.text}}>{client.name} — 提案書PPTX</h3>
           <Ornament width={80} color={C.sky} style={{margin:"10px 0 0",justifyContent:"flex-start"}}/>
         </div>
         <div style={{flex:1,overflowY:"auto",padding:"24px 32px"}}>
           {loading
             ? <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:180,flexDirection:"column",gap:14}}>
                 <div style={{width:32,height:32,border:`2px solid ${C.borderSoft}`,borderTop:`2px solid ${C.sky}`,borderRadius:"50%",animation:"spin 1s linear infinite"}}/>
-                <div style={{color:C.textSoft,fontSize:13,fontFamily:"'Jost',sans-serif"}}>提案書を生成しています</div>
+                <div style={{color:C.textSoft,fontSize:13,fontFamily:"'Jost',sans-serif"}}>{statusMsg}</div>
               </div>
-            : <div style={{color:C.text,fontSize:13,lineHeight:2,whiteSpace:"pre-wrap",fontFamily:"'Noto Sans JP',sans-serif"}}>{proposal}</div>
+            : proposalJson
+              ? <>
+                  <div style={{color:C.text,fontSize:12,lineHeight:1.9,whiteSpace:"pre-wrap",fontFamily:"'Noto Sans JP',monospace",background:"#f8f9fa",borderRadius:12,padding:20,border:`1px solid ${C.borderSoft}`}}>{jsonPreview}</div>
+                  {pptxResult && (
+                    <div style={{marginTop:14,padding:"14px 18px",borderRadius:12,fontSize:13,fontFamily:"'Noto Sans JP',sans-serif",
+                      background: pptxResult.error ? "#fff5f5" : "#f0faf0",
+                      border: `1px solid ${pptxResult.error ? "#ffcdd2" : "#c8e6c9"}`,
+                      color: pptxResult.error ? "#c62828" : "#2e7d32"
+                    }}>
+                      {pptxResult.error
+                        ? `エラー: ${pptxResult.error}`
+                        : `PPTX生成完了: ${pptxResult.path}`}
+                    </div>
+                  )}
+                </>
+              : <div style={{color:"#c62828",fontSize:13,fontFamily:"'Noto Sans JP',sans-serif"}}>{statusMsg}</div>
           }
         </div>
-        {!loading && proposal && (
+        {!loading && proposalJson && (
           <div style={{padding:"18px 32px",borderTop:`1px solid ${C.borderSoft}`,display:"flex",gap:10,flexShrink:0}}>
-            <button onClick={()=>navigator.clipboard.writeText(proposal)} style={{flex:1,background:"none",border:`1px solid ${C.border}`,borderRadius:12,color:C.textMid,padding:"11px",cursor:"pointer",fontSize:12,transition:"all 0.2s"}} onMouseEnter={e=>e.currentTarget.style.borderColor=C.sky} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>コピー</button>
-            <button onClick={()=>printProposalPDF(client.name,proposal)} style={{flex:2,background:`linear-gradient(135deg,#5b7fc4,#7a9fd4)`,border:"none",borderRadius:12,color:"#fff",padding:"11px",cursor:"pointer",fontSize:13,fontWeight:700,boxShadow:"0 4px 16px rgba(91,127,196,0.2)"}}>📄 PDF出力</button>
+            <button onClick={()=>navigator.clipboard.writeText(JSON.stringify(proposalJson,null,2))} style={{flex:1,background:"none",border:`1px solid ${C.border}`,borderRadius:12,color:C.textMid,padding:"11px",cursor:"pointer",fontSize:12,transition:"all 0.2s"}} onMouseEnter={e=>e.currentTarget.style.borderColor=C.sky} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>JSON</button>
+            <button onClick={generatePptx} disabled={pptxGenerating||(pptxResult&&!pptxResult.error)} style={{flex:2,background:pptxResult&&!pptxResult.error?"#e0e0e0":pptxGenerating?"#b0b0b0":`linear-gradient(135deg,#5b7fc4,#7a9fd4)`,border:"none",borderRadius:12,color:pptxResult&&!pptxResult.error?C.textMid:"#fff",padding:"11px",cursor:pptxResult&&!pptxResult.error?"default":"pointer",fontSize:13,fontWeight:700,boxShadow:"0 4px 16px rgba(91,127,196,0.2)"}}>{pptxResult&&!pptxResult.error?"✓ PPTX生成済":pptxGenerating?"生成中...":"📄 PPTX生成"}</button>
+            <button onClick={sendProposalToSlack} disabled={slackSent||slackSending} style={{flex:2,background:slackSent?"#e0e0e0":slackSending?"#b0b0b0":`linear-gradient(135deg,#4A154B,#6b3a6c)`,border:"none",borderRadius:12,color:slackSent?C.textMid:"#fff",padding:"11px",cursor:slackSent?"default":"pointer",fontSize:13,fontWeight:600}}>{slackSent?"✓ Slack送信済":slackSending?"送信中...":"💬 Slack送信"}</button>
             <button onClick={onClose} style={{flex:1,background:"none",border:`1px solid ${C.border}`,borderRadius:12,color:C.textMid,padding:"11px",cursor:"pointer",fontSize:12,transition:"all 0.2s"}}>完了</button>
           </div>
         )}
@@ -1997,7 +2326,7 @@ function QuizCelebration({ show, onDone }) {
 // ============================================================
 const SLACK_CHANNEL_ID = "C0AE03HRML5";
 const NAVI_CHANNEL_ID  = "C0AMU9B2RCK";   // #navicrew-knowledge
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwJKXMDM0lnIgKljfBVr0LzFRK5nOMRX-FISLqsBL_1oiVj5WNiY3FFuotkD-Xqg5P-Ow/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbyCVC8o4sLLL9EC-COfqv23EASbBzLnX4qe-Z3v0P2bbxlskSgtUaF4NhjNeNS8vRV0OQ/exec";
 const SLACK_KATO_ID    = "U08H0A48A2G";
 
 // NaviCrew Bot チャットモーダル（Crew向け）
@@ -2027,7 +2356,7 @@ function NaviCrewBotModal({ crewName, onClose, knowledge, onAddHistory }) {
       const res = await fetch(GAS_URL, {
         method:"POST", headers:{"Content-Type":"text/plain"},
         body: JSON.stringify({type:"claude", payload:{
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
+          model:"claude-sonnet-4-5", max_tokens:1000,
           system:`あなたはPORTAMENT（BPO・業務自動化コンサル会社）の社内アシスタント「NaviCrew」です。
 社員からの質問に丁寧・簡潔に回答してください。
 
@@ -2638,49 +2967,40 @@ function Portal({ crewName }) {
       concerns:r.concerns||prev[selected.id].concerns,
       tldvHistory:[...(prev[selected.id].tldvHistory||[]),r]
     }}));
-    // NaviCrew として担当Slackチャンネルに議事録通知（未設定時は #delivery-crew へ）
+    // Word HTML生成（Slack添付＆Gドライブ共通）
+    const wordHtml = buildWordHtml(r, selected.name);
+    const date = r.date || new Date().toISOString().slice(0,10);
+    const filename = `${date}_${selected.name}_議事録.doc`;
+
+    // NaviCrew として担当SlackチャンネルにWord議事録を添付送信
     const ch = detail.slackChannel || "C0865EFGSCV";
-    {
-      const naText = (r.nextActions||[]).map(a=>`• ${a}`).join("\n");
-      fetch(GAS_URL, {
-        method:"POST", headers:{"Content-Type":"text/plain"},
-        body: JSON.stringify({
-          type:"slack",
-          payload:{
-            channel: ch,
-            text: `📋 ${selected.name}のMTG議事録が更新されました`,
-            blocks:[
-              {type:"header", text:{type:"plain_text", text:`📋 ${selected.name} - MTG議事録`, emoji:true}},
-              {type:"section", fields:[
-                {type:"mrkdwn", text:`*📅 日付*\n${r.date||"不明"}`},
-                {type:"mrkdwn", text:`*👤 担当Crew*\n${crewName||"不明"}`}
-              ]},
-              {type:"section", text:{type:"mrkdwn", text:`*📌 サマリー*\n${r.summary||"なし"}`}},
-              {type:"section", text:{type:"mrkdwn", text:`*✅ ネクストアクション*\n${naText||"なし"}`}},
-              ...(r.concerns?[{type:"section", text:{type:"mrkdwn", text:`*⚠️ 懸念事項*\n${r.concerns}`}}]:[]),
-              ...(r.automationHints?.length?[{type:"section", text:{type:"mrkdwn", text:`*⚙️ 自動化ヒント*\n${r.automationHints.join("、")}`}}]:[]),
-              {type:"context", elements:[{type:"mrkdwn", text:`_NaviCrew · NewCrews Portal · ${crewName}が解析_`}]}
-            ]
-          }
-        })
-      }).then(r=>r.text()).then(t=>console.log("Slack通知結果:",t)).catch(e=>console.warn("NaviCrew Slack通知失敗:",e));
-    }
-    // Gドライブに議事録を自動格納
+    const naText = (r.nextActions||[]).map(a=>`• ${a}`).join("\n");
+    fetch(GAS_URL, {
+      method:"POST", headers:{"Content-Type":"text/plain"},
+      body: JSON.stringify({
+        type:"slack_file",
+        payload:{
+          channel: ch,
+          filename: filename,
+          title: `${selected.name} - MTG議事録（${date}）`,
+          content: wordHtml,
+          message: `📋 *${selected.name}* のMTG議事録が更新されました\n📅 ${date}　👤 ${crewName||"不明"}\n\n*📌 サマリー*\n${r.summary||"なし"}\n\n*✅ ネクストアクション*\n${naText||"なし"}${r.concerns?"\n\n*⚠️ 懸念*\n"+r.concerns:""}`,
+        }
+      })
+    }).then(r=>r.text()).then(t=>console.log("Slack Word送信結果:",t)).catch(e=>console.warn("Slack Word送信失敗:",e));
+
+    // Gドライブに議事録Word自動格納（顧客フォルダ）
     fetch(GAS_URL, {
       method:"POST", headers:{"Content-Type":"text/plain"},
       body: JSON.stringify({
         type:"drive",
         payload:{
           clientName: selected.name,
-          date: r.date || new Date().toISOString().slice(0,10),
-          summary: r.summary||"",
-          nextActions: r.nextActions||[],
-          concerns: r.concerns||"",
-          automationHints: r.automationHints||[],
-          crewName: crewName||""
+          date: date,
+          htmlContent: wordHtml,
         }
       })
-    }).catch(e=>console.warn("Gドライブ保存失敗:",e));
+    }).then(r=>r.text()).then(t=>console.log("Gドライブ保存結果:",t)).catch(e=>console.warn("Gドライブ保存失敗:",e));
   };
   const addAction = () => {
     if (!newAction.trim()) return;
